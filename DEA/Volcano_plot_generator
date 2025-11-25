@@ -1,0 +1,130 @@
+###############################################################################
+# Volcano Plot Generator
+# Project: MicroRNA mutants undergo genetic compensation through metabolic
+#          reprogramming
+# Author: Giovana Motta
+# Last update: 2025-11-25
+#
+# Description:
+#   This script provides a modular and reproducible pipeline to generate 
+#   volcano plots for miRNA mutants (e.g. miR-99, miR-150, miR-187) across three developmental stages 
+#   (7, 24 and 50 hpf) of zebrafish, using DESeq2 differential 
+#   expression results.
+#
+# Output:
+#   High-resolution PNG volcano plots saved per stage and per miRNA.
+###############################################################################
+
+# ---------------------------- Libraries -------------------------------------
+
+library(dplyr)
+library(ggplot2)
+library(EnhancedVolcano)
+
+# --------------------------- Helper Function ---------------------------------
+
+#' Generate a volcano plot from a DESeq2 results table
+#'
+#' @param df Dataframe containing log2FoldChange and padj columns
+#' @param title Plot title
+#' @param outfile Output file path (.png)
+#' @return Saves plot to disk
+generate_volcano <- function(df, title, outfile) {
+    
+    # Classification colors
+    keyvals <- ifelse(df$log2FoldChange < -1 & df$padj < 0.05, '#00A94F',
+                 ifelse(df$log2FoldChange > 1 & df$padj < 0.05, '#E33092', 'grey80'))
+    keyvals[is.na(keyvals)] <- "grey80"
+    keyvals[abs(df$log2FoldChange) <= 1] <- "grey80"
+    
+    names(keyvals)[keyvals == '#00A94F'] <- 'Down-regulated'
+    names(keyvals)[keyvals == '#E33092'] <- 'Up-regulated'
+    names(keyvals)[keyvals == 'grey80'] <- 'Not significant'
+    
+    # Plot
+    p <- EnhancedVolcano(
+        df,
+        lab = NA,
+        x = 'log2FoldChange',
+        y = 'padj',
+        pointSize = 3.5,
+        title = NULL,
+        subtitle = NULL,
+        caption = NULL,
+        xlim = c(-10, 10),
+        ylim = c(0, 50),
+        legendPosition = "none",
+        xlab = 'Log2 FoldChange',
+        ylab = bquote(~-Log[10]~italic(P[adj])),
+        pCutoff = 0.05,
+        FCcutoff = 1,
+        border = 'full',
+        gridlines.minor = FALSE,
+        gridlines.major = FALSE,
+        colCustom = keyvals
+    ) + coord_flip() +
+        labs(title = title) +
+        theme(plot.title = element_text(hjust = 0.5, size = 22))
+    
+    # Export
+    ggsave(outfile, p, width = 10, limitsize = FALSE)
+}
+
+# --------------------------- Data Loader -------------------------------------
+
+#' Load and prepare results table
+#'
+#' @param path File path (.csv)
+#' @return Cleaned dataframe with selected columns
+load_dge <- function(path) {
+    df <- read.csv(path)
+    df$log2FoldChange <- as.numeric(df$log2FoldChange)
+    df <- df[, c("log2FoldChange", "Row.names", "padj")]
+    df <- df[!duplicated(df$Row.names), ]
+    df <- df[!is.na(df$padj), ]
+    return(df)
+}
+
+# ------------------------- Batch Processing ----------------------------------
+
+generate_all_plots <- function(stage, mir_list, base_dir) {
+    
+    message("\n---- Processing stage: ", stage, " hpf ----")
+    
+    for (mir in mir_list) {
+        
+        infile <- file.path(
+            base_dir, stage, "results",
+            paste0("mir", mir, "_genetic_compensation_", stage, "h_differential_expressed_genes_ALL_GENES.csv")
+        )
+        
+        outfile <- file.path(
+            "/gpfs/gibbs/project/nicoli/gmd54/postgrad/miR_mutants/genetic_compensation/figures_paper/volcano_plot",
+            stage,
+            paste0("volcano_plot_mir", mir, "_mutant_", stage, "hpf.png")
+        )
+        
+        message("→ miR-", mir, ": loading data...")
+        df <- load_dge(infile)
+        
+        message("→ Generating volcano plot...")
+        generate_volcano(df,
+                         title = bquote("miR-" * .(mir) ^ {"Δ/Δ"}),
+                         outfile = outfile)
+        message("✓ Saved: ", outfile)
+    }
+}
+
+# ------------------------- Run Pipeline --------------------------------------
+
+base_dir <- "/gpfs/gibbs/project/nicoli/gmd54/postgrad/miR_mutants/genetic_compensation/pipeline/1_Differential_Gene_Expression/Data_preparation_DGE_Analysis"
+
+miRs <- c(99, 150, 187)
+
+generate_all_plots("7",  miRs, base_dir)
+generate_all_plots("24", miRs, base_dir)
+generate_all_plots("50", miRs, base_dir)
+
+###############################################################################
+# End of script
+###############################################################################
