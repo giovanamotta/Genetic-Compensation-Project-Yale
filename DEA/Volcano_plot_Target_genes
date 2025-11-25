@@ -1,0 +1,172 @@
+###############################################################################
+#                    Volcano Plots (Target vs Non-Target)
+#              Genetic Compensation in Zebrafish miRNA Mutants
+# Author: Giovana Motta
+# Date: 12/14/2024
+#
+# ---------------------------------------------------------------------------
+#                           📘 DATASET DESCRIPTION
+# ---------------------------------------------------------------------------
+# This script generates volcano plots integrating:
+#   • Differential gene expression (DESeq2)
+#   • Predicted target genes (TargetScan / custom pipeline)
+#   • Unpredicted (non-target) genes
+#
+# Biological system:
+#   • Model: Danio rerio (zebrafish)
+#   • Mutants: miR-99Δ/Δ, miR-150Δ/Δ, miR-187Δ/Δ
+#   • Timepoints: 7 hpf, 24 hpf, 50 hpf
+#   • Input: bulk RNA-seq from whole embryos
+#
+# ---------------------------------------------------------------------------
+#                      REQUIRED INPUT DATASETS (simplified)
+# ---------------------------------------------------------------------------
+# 1) Differential Expression tables for each miRNA and timepoint:
+#
+#    mir99_DEG_7h.csv     – DESeq2 DEG table for miR-99 at 7hpf
+#    mir150_DEG_7h.csv    – DESeq2 DEG table for miR-150 at 7hpf
+#    mir187_DEG_7h.csv    – DESeq2 DEG table for miR-187 at 7hpf
+#
+#    mir99_DEG_24h.csv
+#    mir150_DEG_24h.csv
+#    mir187_DEG_24h.csv
+#
+#    mir99_DEG_50h.csv
+#    mir150_DEG_50h.csv
+#    mir187_DEG_50h.csv
+#
+#  Required columns:
+#    gene_name, log2FoldChange, padj, pvalue
+#
+# ---------------------------------------------------------------------------
+# 2) Predicted Target gene lists:
+#
+#    mir99_predicted_up_7h.csv
+#    mir99_predicted_down_7h.csv
+#    mir150_predicted_up_7h.csv
+#    mir150_predicted_down_7h.csv
+#    mir187_predicted_up_7h.csv
+#    mir187_predicted_down_7h.csv
+#
+#   (similarly for 24h and 50h)
+#
+# ---------------------------------------------------------------------------
+# 3) Unpredicted (non-target) gene lists:
+#
+#    mir99_unpredicted_up_7h.csv
+#    mir99_unpredicted_down_7h.csv
+#    mir150_unpredicted_up_7h.csv
+#    mir150_unpredicted_down_7h.csv
+#    mir187_unpredicted_up_7h.csv
+#    mir187_unpredicted_down_7h.csv
+#
+#   (similarly for 24h and 50h)
+#
+###############################################################################
+
+# Load libraries -------------------------------------------------------------
+library(EnhancedVolcano)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(qtl2)
+
+###############################################################################
+#                                 FUNCTIONS
+###############################################################################
+
+add_target_status <- function(df, target_genes, notarget_genes) {
+  df %>%
+    mutate(target_status = case_when(
+      gene_name %in% target_genes ~ "Target",
+      TRUE ~ "Not Target"
+    ))
+}
+
+###############################################################################
+#                           INPUT PLACEHOLDER SECTION
+###############################################################################
+# Replace these with your real objects (dataframes) after loading your tables:
+
+# Example placeholders:
+mir99 <- data.frame()
+mir150 <- data.frame()
+mir187 <- data.frame()
+
+mir99_target_up <- data.frame()
+mir99_target_down <- data.frame()
+mir99_notarget_up <- data.frame()
+mir99_notarget_down <- data.frame()
+
+# (Repeat for mir150 and mir187 at 7, 24, 50 hpf)
+# ---------------------------------------------------------------------------
+# This structure is intentional, so the GitHub file documents the workflow
+# without exposing file system paths.
+###############################################################################
+
+###############################################################################
+#                     PREPROCESSING – EXAMPLE STRUCTURE
+###############################################################################
+
+# Convert character → numeric for DEG tables
+# mir99$log2FoldChange <- as.numeric(mir99$log2FoldChange)
+# mir150$log2FoldChange <- as.numeric(mir150$log2FoldChange)
+# mir187$log2FoldChange <- as.numeric(mir187$log2FoldChange)
+
+# Build volcano-ready dataframes:
+# data_volcano_99  <- mir99[, c("gene_name","log2FoldChange","pvalue","padj")]
+# data_volcano_150 <- mir150[, ...]
+# data_volcano_187 <- mir187[, ...]
+
+###############################################################################
+#                     CREATE COLOR SCHEME FOR VOLCANO PLOTS
+###############################################################################
+
+# Color mapping:
+#  Up Target        → #E33092 (dark pink)
+#  Down Target      → #00A94F (dark green)
+#  Up Not Target    → #F4A3D3 (light pink)
+#  Down Not Target  → #A3F4A3 (light green)
+#  Not Significant  → grey50
+
+###############################################################################
+#                 VOLCANO PLOT TEMPLATE (applies to all miRNAs)
+###############################################################################
+
+# Example usage once your objects are loaded:
+
+# keyvals <- ifelse(
+#   df$padj > 0.05, 'grey50',
+#   ifelse(df$target_status == "Target" & df$log2FoldChange > 0, '#E33092',
+#   ifelse(df$target_status == "Target" & df$log2FoldChange < 0, '#00A94F',
+#   ifelse(df$target_status == "Not Target" & df$log2FoldChange > 0, '#F4A3D3',
+#   ifelse(df$target_status == "Not Target" & df$log2FoldChange < 0, '#A3F4A3',
+#   'grey50')))))
+# )
+
+# names(keyvals)[keyvals == '#E33092'] <- 'Up Target'
+# names(keyvals)[keyvals == '#00A94F'] <- 'Down Target'
+# names(keyvals)[keyvals == '#F4A3D3'] <- 'Up Not Target'
+# names(keyvals)[keyvals == '#A3F4A3'] <- 'Down Not Target'
+# names(keyvals)[keyvals == 'grey50'] <- 'Not Significant'
+
+# category_order <- c("Up Target", "Up Not Target", "Down Target",
+#                     "Down Not Target", "Not Significant")
+
+# volcano_plot <- EnhancedVolcano(
+#   df,
+#   lab = NA,
+#   x = 'log2FoldChange',
+#   y = 'padj',
+#   colCustom = keyvals,
+#   legendPosition = "bottom",
+#   pCutoff = 0.05,
+#   FCcutoff = 0.5
+# ) +
+#   coord_flip() +
+#   labs(title = "miR-XX Δ/Δ – Stage X hpf")
+
+###############################################################################
+#                          END OF TEMPLATE
+###############################################################################
+
