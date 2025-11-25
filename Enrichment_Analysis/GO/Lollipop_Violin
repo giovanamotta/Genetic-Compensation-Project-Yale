@@ -1,0 +1,264 @@
+###############################################################################
+#          Violin + Lollipop Plots – miR-99 (50 hpf) – GO Metabolic Classes
+# Author: Giovana Motta
+# Last update: 12/14/2024
+#
+# This script performs:
+#   ✔ GO enrichment (BP) for up/down DEGs of miR-99 at 50 hpf
+#   ✔ Expansion of GO terms to gene-level
+#   ✔ Annotation into metabolic / biosynthetic / catabolic classes
+#   ✔ Integration with DEG log2FC
+#   ✔ Lollipop enrichment plot
+#   ✔ Violin plot of log2FC values by GO class
+#
+###############################################################################
+
+###############################################################################
+#                         📘 DATASET DESCRIPTION
+###############################################################################
+# Biological System:
+#   • Organism: Danio rerio (zebrafish)
+#   • Mutant: miR-99Δ/Δ
+#   • Stage: 50 hpf
+#   • RNA-seq: bulk, WT vs mutant
+#
+# Required inputs (placeholders):
+#
+# 1. GO Enrichment inputs (two files):
+#        up_99_50.rds
+#        down_99_50.rds
+#
+#    Must contain: $entrez, $ID, $Description, $GeneRatio, $Count
+#
+# 2. DEG list (one file):
+#        resSig_99_50.rds
+#
+#    Must contain: $gene_name, $log2FoldChange
+#
+# 3. Target gene list (one file):
+#        mir99_target_ids.rds
+#
+# User only needs to replace the readRDS() paths.
+###############################################################################
+
+# -----------------------------------------------------------------------------
+# Load libraries
+# -----------------------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(clusterProfiler)
+library(org.Dr.eg.db)
+library(forcats)
+
+`%ni%` <- Negate(`%in%`)
+
+# -----------------------------------------------------------------------------
+# Load data (replace with your paths)
+# -----------------------------------------------------------------------------
+up_99_50   <- data.frame()    # readRDS("up_99_50.rds")
+down_99_50 <- data.frame()    # readRDS("down_99_50.rds")
+resSig_99_50 <- data.frame()  # readRDS("resSig_99_50.rds")
+mir99_target_ids <- character() # readRDS("mir99_target_ids.rds")
+
+###############################################################################
+#                             GO ENRICHMENT (BP)
+###############################################################################
+
+gene_lists <- list(
+  up_99_50 = up_99_50$entrez,
+  down_99_50 = down_99_50$entrez
+)
+
+enrich_results <- imap(gene_lists, function(genes, name) {
+  genes <- genes[!is.na(genes)]
+  ego <- enrichGO(
+    gene          = genes,
+    OrgDb         = org.Dr.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 1,
+    readable      = TRUE
+  )
+  ego
+})
+
+ego_up_99_50   <- enrich_results$up_99_50
+ego_down_99_50 <- enrich_results$down_99_50
+
+###############################################################################
+#                       Expand GO results + annotate meta
+###############################################################################
+
+expand_go <- function(ego_object, regulation) {
+  res <- ego_object@result
+  res$mir <- "99"
+  res$HPF <- "50"
+  res$expression <- regulation
+  res %>% separate_rows(geneID, sep = "/")
+}
+
+GO_up   <- expand_go(ego_up_99_50,   "up")
+GO_down <- expand_go(ego_down_99_50, "down")
+
+GO_all <- bind_rows(GO_up, GO_down)
+
+###############################################################################
+#                       Join log2FC from DEG list
+###############################################################################
+
+resSig_99_50_clean <- resSig_99_50 %>%
+  mutate(
+    mir = "99",
+    HPF = "50",
+    regulation = case_when(
+      log2FoldChange > 0 ~ "up",
+      log2FoldChange < 0 ~ "down",
+      TRUE ~ NA
+    )
+  )
+
+GO_with_fc <- GO_all %>%
+  left_join(
+    resSig_99_50_clean %>% select(gene_name, regulation, log2FoldChange),
+    by = c("geneID" = "gene_name", "expression" = "regulation")
+  ) %>%
+  filter(!is.na(log2FoldChange))
+
+###############################################################################
+#                        Assign target vs non-target
+###############################################################################
+
+convert_ensembl_to_entrez_unique <- function(ensembl_ids) {
+  entrez <- mapIds(org.Dr.eg.db, keys=ensembl_ids,
+                   column="ENTREZID", keytype="ENSEMBL")
+  entrez <- entrez[!is.na(entrez)]
+  unique(entrez)
+}
+
+mir99_entrez <- convert_ensembl_to_entrez_unique(mir99_target_ids)
+
+GO_with_fc_target <- GO_with_fc %>%
+  mutate(
+    target_status = ifelse(geneID %in% mir99_entrez, "target", "notarget")
+  )
+
+###############################################################################
+#                   Assign GO metabolic categories (Energy / CP / AP / GEM)
+###############################################################################
+
+ancestors <- AnnotationDbi::toTable(GOBPANCESTOR)
+colnames(ancestors) <- c("GOID", "Ancestor")
+
+GO_energy     <- ancestors %>% filter(Ancestor == "GO:0006091")
+GO_catabolic  <- ancestors %>% filter(Ancestor == "GO:0009056")
+GO_anabolic   <- ancestors %>% filter(Ancestor == "GO:0009058")
+GO_machinery  <- ancestors %>% filter(Ancestor %in% c(
+  "GO:0006351","GO:0006412","GO:0006401","GO:0009451"
+))
+
+GO_energy$category    <- "Energy Metabolism"
+GO_catabolic$category <- "Catabolic Process"
+GO_anabolic$category  <- "Anabolism Process"
+GO_machinery$category <- "Gene Expression Machinery"
+
+all_ancestors <- bind_rows(GO_energy, GO_catabolic, GO_anabolic, GO_machinery)
+
+GO_final <- GO_with_fc_target %>%
+  left_join(all_ancestors %>% select(GOID, category),
+            by = c("ID" = "GOID")) %>%
+  mutate(class = ifelse(is.na(category), "Others", category))
+
+###############################################################################
+#                                VIOLIN PLOT
+###############################################################################
+
+friendly_colors <- c(
+  "Energy Metabolism"      = "#e09f3e",
+  "Gene Expression Machinery" = "#9e2a2b",
+  "Catabolic Process"      = "#2a9e63",
+  "Anabolism Process"      = "#996633",
+  "Others"                 = "grey"
+)
+
+p_violin <- ggplot(GO_final,
+                   aes(x = class, y = log2FoldChange, fill = class)) +
+  geom_violin(trim=FALSE, scale="width", alpha=0.7) +
+  geom_jitter(width=0.15, alpha=0.6, size=1.6, color="black") +
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_fill_manual(values=friendly_colors) +
+  labs(
+    title="miR-99 – 50 hpf – GO Metabolic Classes",
+    y="log2 Fold Change",
+    x="GO Metabolic Class"
+  ) +
+  theme_minimal(base_size=14) +
+  theme(
+    axis.text.x = element_text(angle=30, hjust=1, face="bold"),
+    plot.title = element_text(hjust=0.5, size=20)
+  )
+
+ggsave("violin_miR99_50hpf_GO_classes.png", p_violin,
+       width=10, height=6, dpi=600)
+
+###############################################################################
+#                               LOLLIPOP PLOT
+###############################################################################
+
+stats_results <- GO_final %>%
+  group_by(class) %>%
+  summarise(
+    up = sum(expression=="up"),
+    down = sum(expression=="down"),
+    .groups="drop"
+  ) %>%
+  mutate(
+    n_total = up + down,
+    log2_or = log2((up+1)/(down+1)),
+    pval_up = ifelse(n_total>0,
+                     binom.test(up, n_total, p=0.5,
+                                alternative="greater")$p.value, NA),
+    pval_down = ifelse(n_total>0,
+                       binom.test(down, n_total, p=0.5,
+                                  alternative="greater")$p.value, NA),
+    signif = case_when(
+      !is.na(pval_up) & pval_up < 0.05   ~ "up",
+      !is.na(pval_down) & pval_down < 0.05 ~ "down",
+      TRUE ~ "ns"
+    ),
+    class_short = factor(recode(class,
+                                "Energy Metabolism"="EM",
+                                "Gene Expression Machinery"="GEM",
+                                "Catabolic Process"="CP",
+                                "Anabolism Process"="AP",
+                                "Others"="OT"))
+  )
+
+stats_results$color <- case_when(
+  stats_results$signif=="up"   ~ "#8856a7",
+  stats_results$signif=="down" ~ "#31a354",
+  TRUE ~ "grey60"
+)
+
+p_lollipop <- ggplot(stats_results,
+                     aes(x=class_short, y=log2_or, color=color)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  geom_segment(aes(xend=class_short, y=0, yend=log2_or), size=1.8) +
+  geom_point(size=6, shape=21, fill=stats_results$color, color="black") +
+  labs(
+    y="log2((UP+1)/(DOWN+1))",
+    x="GO Class Code",
+    title="miR-99 – 50 hpf – Enrichment Bias"
+  ) +
+  theme_minimal(base_size=16)
+
+ggsave("lollipop_miR99_50hpf_GO_bias.png", p_lollipop,
+       width=8, height=6, dpi=600, bg="white")
+
+###############################################################################
+#                                   END
+###############################################################################
