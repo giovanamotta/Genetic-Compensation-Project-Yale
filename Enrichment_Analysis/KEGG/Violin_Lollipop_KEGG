@@ -1,0 +1,249 @@
+###############################################################################
+#           KEGG – Violin + Lollipop – miR-99 (50 hpf)
+#   Metabolic Functions (Common + Others) – Figure Script for Publication
+#
+# Author: Giovana Motta
+# Last update: 12/14/2024
+#
+# This script performs:
+#   ✔ Load KEGG enrichment results (up/down)
+#   ✔ Expand geneID rows
+#   ✔ Join with DEG log2FC
+#   ✔ Classify KEGG pathways into metabolic categories
+#   ✔ Identify targets vs non-targets
+#   ✔ Generate violin plots of log2FC by functional class
+#   ✔ Generate lollipop plot of UP vs DOWN bias
+#
+###############################################################################
+
+###############################################################################
+#                             Dataset Description
+###############################################################################
+# Organism: Danio rerio (zebrafish)
+# Mutant: miR-99Δ/Δ
+# Stage: 50 hpf
+# Analysis:
+#   • KEGG enriched pathways from DEGs
+#   • DEGs from DESeq2
+#   • Target gene list (predicted from miR-99 binding models)
+#
+# Required input files (placeholders):
+#   res_enrich_up_99_50.rds     – KEGG enrichment (UP genes)
+#   res_enrich_down_99_50.rds   – KEGG enrichment (DOWN genes)
+#   resSig_99_50.rds            – Significant DEGs (with log2FC)
+#   mir99_target_ids.rds        – Target ENSEMBL IDs for miR-99
+#
+# Replace the readRDS() paths with your local HPC paths.
+###############################################################################
+
+# -----------------------------------------------------------------------------
+# Loading libraries
+# -----------------------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(broom)
+library(org.Dr.eg.db)
+
+`%ni%` <- Negate(`%in%`)
+
+# -----------------------------------------------------------------------------
+# Load required data – replace paths
+# -----------------------------------------------------------------------------
+res_enrich_up_99_50   <- data.frame()   # readRDS("res_enrich_up_99_50.rds")
+res_enrich_down_99_50 <- data.frame()   # readRDS("res_enrich_down_99_50.rds")
+resSig_99_50          <- data.frame()   # readRDS("resSig_99_50.rds")
+mir99_target_ids       <- character()   # readRDS("mir99_target_ids.rds")
+
+# -----------------------------------------------------------------------------
+# Add metadata to KEGG objects
+# -----------------------------------------------------------------------------
+df_up_99_50 <- res_enrich_up_99_50 %>%
+  mutate(HPF = "50", mir = "99", expression = "up")
+
+df_down_99_50 <- res_enrich_down_99_50 %>%
+  mutate(HPF = "50", mir = "99", expression = "down")
+
+KEGG_data <- bind_rows(df_up_99_50, df_down_99_50)
+
+# -----------------------------------------------------------------------------
+# Expand KEGG rows by geneID
+# -----------------------------------------------------------------------------
+KEGG_expanded <- KEGG_data %>%
+  separate_rows(geneID, sep = "/")
+
+###############################################################################
+#                   Retrieve log2FC from DEG dataset
+###############################################################################
+
+resSig_99_50_clean <- resSig_99_50 %>%
+  mutate(
+    regulation = case_when(
+      log2FoldChange > 0 ~ "up",
+      log2FoldChange < 0 ~ "down",
+      TRUE ~ NA
+    )
+  )
+
+# Function returns log2FC only if consistent with enrichment direction
+get_log2FC <- function(entrez_id, expression_value) {
+  if(entrez_id %in% resSig_99_50_clean$entrez) {
+    row <- resSig_99_50_clean %>% filter(entrez == entrez_id)
+    if(nrow(row)==1) {
+      if( (expression_value=="up"   & row$log2FoldChange>0) |
+          (expression_value=="down" & row$log2FoldChange<0) ) {
+        return(row$log2FoldChange)
+      }
+    }
+  }
+  return(NA_real_)
+}
+
+KEGG_expanded_lfc <- KEGG_expanded %>%
+  mutate(
+    log2FC = map2_dbl(geneID, expression, get_log2FC)
+  ) %>%
+  filter(!is.na(log2FC))
+
+###############################################################################
+#                   Identify whether genes are targets
+###############################################################################
+
+convert_ensembl_to_entrez_unique <- function(ensembl_ids){
+  entrez <- mapIds(org.Dr.eg.db, keys=ensembl_ids,
+                   column="ENTREZID", keytype="ENSEMBL")
+  unique(entrez[!is.na(entrez)])
+}
+
+mir99_entrez <- convert_ensembl_to_entrez_unique(mir99_target_ids)
+
+KEGG_lfc_target <- KEGG_expanded_lfc %>%
+  mutate(
+    target_status = ifelse(geneID %in% mir99_entrez, "target", "notarget")
+  )
+
+###############################################################################
+#                     Classify KEGG into metabolic categories
+###############################################################################
+
+kegg_gene_expression_terms <- c(
+  "Transcription", "RNA polymerase", "mRNA surveillance pathway",
+  "RNA degradation", "Aminoacyl-tRNA biosynthesis", "RNA transport",
+  "Ribosome"
+)
+
+KEGG_classified <- KEGG_lfc_target %>%
+  mutate(
+    class = case_when(
+      grepl("Energy metabolism", subcategory, ignore.case = TRUE) ~ "Energy Metabolism",
+      grepl("Transport and catabolism", subcategory, ignore.case = TRUE) ~ "Catabolic Process",
+
+      sapply(Description, function(x)
+        any(str_detect(tolower(x), tolower(kegg_gene_expression_terms)))
+      ) ~ "Gene Expression Machinery",
+
+      subcategory %in% c(
+        "Amino acid metabolism", "Glycan biosynthesis and metabolism",
+        "Lipid metabolism", "Metabolism of cofactors and vitamins",
+        "Metabolism of other amino acids", "Nucleotide metabolism"
+      ) ~ "Anabolism Process",
+
+      TRUE ~ "Others"
+    )
+  )
+
+KEGG_classified$class <- factor(
+  KEGG_classified$class,
+  levels = c("Energy Metabolism","Gene Expression Machinery",
+             "Catabolic Process","Anabolism Process","Others")
+)
+
+###############################################################################
+#                              Violin Plot
+###############################################################################
+
+friendly_colors <- c(
+  "Energy Metabolism" = "#e09f3e",
+  "Gene Expression Machinery" = "#9e2a2b",
+  "Catabolic Process" = "#2a9e63",
+  "Anabolism Process" = "#996633",
+  "Others" = "grey"
+)
+
+p_violin <- ggplot(KEGG_classified,
+    aes(x=class, y=log2FC, fill=class)) +
+  geom_violin(trim=FALSE, scale="width", alpha=0.7) +
+  geom_hline(yintercept = 0, linetype="dashed") +
+  geom_jitter(width=0.15, size=1.8, alpha=0.6) +
+  scale_fill_manual(values=friendly_colors) +
+  labs(
+    title = "miR-99 – 50 hpf – KEGG classes",
+    y = "log2 Fold Change", x = "Category"
+  ) +
+  theme_minimal(base_size=15) +
+  theme(
+    axis.text.x = element_text(angle=30, hjust=1, face="bold"),
+    plot.title = element_text(hjust=0.5, size=20)
+  )
+
+ggsave("KEGG_violin_miR99_50hpf.png", p_violin,
+       width=10, height=6, dpi=600)
+
+###############################################################################
+#                           Lollipop Plot
+###############################################################################
+
+stats_results <- KEGG_classified %>%
+  group_by(class) %>%
+  summarize(
+    up = sum(expression=="up"),
+    down = sum(expression=="down"),
+    n_total = n(),
+    log2_or = log2((up+1)/(down+1)),
+    .groups="drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    p_up   = binom.test(up, n_total, p=0.5, alternative="greater")$p.value,
+    p_down = binom.test(down, n_total, p=0.5, alternative="greater")$p.value,
+    signif = case_when(
+      p_up < 0.05   ~ "up",
+      p_down < 0.05 ~ "down",
+      TRUE ~ "ns"
+    )
+  )
+
+stats_results$class_short <- recode(stats_results$class,
+  "Energy Metabolism"="EM",
+  "Gene Expression Machinery"="GEM",
+  "Catabolic Process"="CP",
+  "Anabolism Process"="AP",
+  "Others"="OT"
+)
+
+stats_results$color <- case_when(
+  stats_results$signif=="up"   ~ "#8856a7",
+  stats_results$signif=="down" ~ "#31a354",
+  TRUE ~ "grey60"
+)
+
+p_lollipop <- ggplot(stats_results,
+    aes(x=class_short, y=log2_or, color=color)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  geom_segment(aes(xend=class_short, y=0, yend=log2_or), size=1.5) +
+  geom_point(size=6, shape=21, fill=stats_results$color, color="black") +
+  labs(
+    y="log2((UP+1)/(DOWN+1))",
+    x="Class (short)"
+  ) +
+  scale_color_identity() +
+  theme_minimal(base_size=16)
+
+ggsave("KEGG_lollipop_miR99_50hpf.png",
+       p_lollipop, width=8, height=6, dpi=600)
+
+###############################################################################
+# END
+###############################################################################
